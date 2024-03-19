@@ -1,12 +1,14 @@
 // server-side script
 use std::{time::Duration};
 use std::collections::HashMap;
+use std::hash::{DefaultHasher, Hash, Hasher};
 use std::sync::{Arc, RwLock};
 use bytes::Bytes;
 use tokio::{net::{TcpListener, TcpStream}, time::sleep};
 use mini_redis::{Connection, Frame};
 
-type KVStore = Arc<RwLock<HashMap<String, Bytes>>>;
+// type KVStore = Arc<RwLock<HashMap<String, Bytes>>>;
+type ShardedKVStore = Arc<Vec<RwLock<HashMap<String, Bytes>>>>; // a vector of RwLock protected HashMaps
 
 #[tokio::main]
 async fn main() {
@@ -18,9 +20,9 @@ async fn init_listener() {
 
     // // shared state
     // the HashMap acts as our key-value store
-    // let mut db: HashMap<String, Vec<u8>> = HashMap::new();
-    // TODO: Shard (using hash) the KVStore with Mutex/ RwLock wrapping
-    let mut db: KVStore = Arc::new(RwLock::new(HashMap::new()));
+    // Shard (using hash) the KVStore with Mutex/ RwLock wrapping
+    let num_shards = 16;
+    let mut db: ShardedKVStore = init_new_shard_db(num_shards).await;
 
 
     let mut retry_attempts = 5; // we do not assume that the network is stable
@@ -64,9 +66,21 @@ async fn init_listener() {
     }
 }
 
-async fn process_query(tcp_stream: TcpStream, db: KVStore) -> () {
+async fn init_new_shard_db(num_shards: usize) -> ShardedKVStore {
+    let mut db_temp = Vec::with_capacity(num_shards);
+
+    for _ in 0..num_shards {
+        let hm: RwLock<HashMap<String, Bytes>> = RwLock::new(HashMap::new());
+        db_temp.push(hm);
+    }
+
+    Arc::new(db_temp)
+}
+
+async fn process_query(tcp_stream: TcpStream, db: ShardedKVStore) -> () {
     use mini_redis::Command::{self, Set, Get};
 
+    let peer_address = tcp_stream.peer_addr().unwrap();
     // TCP connections managed by the `Connection` object from mini-redis
     let mut connection = Connection::new(tcp_stream);
     
@@ -75,7 +89,7 @@ async fn process_query(tcp_stream: TcpStream, db: KVStore) -> () {
     loop {
         // INFO: process the input from client (rewrite `match` to `if let`)
         // loop { match } -> while let || match (care only about subset of arms)  -> if let
-        if let Some(frame) = connection.read_frame().await.unwrap() {
+        if let Ok(Some(frame)) = connection.read_frame().await {
             println!("[SUCCESS] Got new frame: {:?}", frame);
 
             // extract client command from the frame
@@ -85,19 +99,28 @@ async fn process_query(tcp_stream: TcpStream, db: KVStore) -> () {
                     println!(" {:?} ",cmd_temp);
                     let response_frame = match cmd_temp {
                         Set(cmd) => {
-                            let mut write_guard = db.write().unwrap();
+                            // compute partition ID
+                            let hash_value = get_partition(cmd.key()).await;
+                            let partition = (hash_value as usize)%db.len();
+                            let mut write_guard = db[partition].write().unwrap();
+
                             write_guard.insert(cmd.key().to_string(), cmd.value().clone()); // store the value as a byte array
+
                             Frame::Simple("SUCCESS".to_string())
                         }
                         Get(cmd) => {
-                            let read_guard = db.read().unwrap();
+
+                            let hash_value = get_partition(cmd.key()).await;
+                            let partition = (hash_value as usize)%db.len();
+                            let read_guard = db[partition].read().unwrap();
+
                             if let Some(value) = read_guard.get(cmd.key()) {
                                 Frame::Bulk(value.clone())
                             } else {
                                 Frame::Null
                             }
                         }
-                        cmd => {
+                        _ => {
                             Frame::Error("[FAIL] Method Unimplemented".to_string())
                         }
                     };
@@ -117,7 +140,16 @@ async fn process_query(tcp_stream: TcpStream, db: KVStore) -> () {
                     Frame::Error("[FAIL] Error parsing frame".to_string());
                 },
             };
-        } 
+        } else {
+            // Handle disconnection or error without panicking, by breaking out of the loop
+            println!("[INFO] Client {:?} disconnected or error reading frame", peer_address);
+            break;
+        }
     }
 }
 
+async fn get_partition(str_to_hash: &str) -> u64 {
+    let mut hash_fn = DefaultHasher::new();
+    str_to_hash.hash(&mut hash_fn);
+    hash_fn.finish().into()
+}
