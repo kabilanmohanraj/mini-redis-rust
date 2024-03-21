@@ -1,8 +1,8 @@
-use std::time::Duration;
-
+use bytes::Bytes;
 // client-side script
-use mini_redis::client;
-use tokio::{sync::mpsc::{self, Receiver}, time::sleep};
+use mini_redis::{client, Frame};
+use std::time::Duration;
+use tokio::{sync::{mpsc::{self, Receiver}, oneshot}, time::sleep};
 
 mod common;
 use common::types::Op::{self, Set, Get};
@@ -22,18 +22,20 @@ async fn main() {
 
     let client1 = tokio::spawn(
         async move {
-            start_client(sender).await;
+            run_client(sender).await;
         }
     );
 
     let client2 = tokio::spawn(
         async move {
-            start_client(sender_clone).await;
+            run_client(sender_clone).await;
         }
     );
 
     // await on all processes (the tasks have already spawned, but we await their termination here)
-    let (clerk_ret, client1_ret, client2_ret) = tokio::join!(clerk, client1, client2);
+    let (_clerk_ret, 
+         _client1_ret, 
+         _client2_ret) = tokio::join!(clerk, client1, client2);
     // or we can do this
     // clerk.await;
     // client1.await;
@@ -41,62 +43,31 @@ async fn main() {
     
 }
 
-async fn start_client(request_sender: mpsc::Sender<Op>) {
+async fn run_client(request_sender: mpsc::Sender<Op>) {
 
-    // TODO: match statement here to support other operations as well
-
-    let op = Set { key: "Hello".to_string(), value: "World!".into() };
+    let (tx, mut rx) = oneshot::channel();
+    let op = Set { 
+        key: "Hello".to_string(), 
+        value: "World!".into(),
+        reply_channel: tx
+    };
     request_sender.send(op).await.unwrap();
+    match rx.await.unwrap() {
+        Ok(()) => println!("[SUCCESS] SET"),
+        Err(e) => println!("[FAIL] SET error: {:?}", e),
+    }
 
-    let op = Get { key: "Hello".to_string() };
+    let (tx1, mut rx1) = oneshot::channel();
+    let op = Get { 
+        key: "Hello".to_string(),
+        reply_channel: tx1
+    };
     request_sender.send(op).await.unwrap();
-
-    
-    // // TODO: retry logic for failed requests
-    // match client::connect(redis_addr).await {
-    //     Ok(mut client) => {
-    //         // client
-    //         println!("[SUCCESS] Connected to server");
-            
-    //         let query1 = tokio::spawn(async {
-    //             // match client.set("Hello", "World!".into()).await {
-    //             //     Ok(()) => println!("[SUCCESS] SET"),
-    //             //     Err(e) => println!("[FAIL] SET error: {:?}", e),
-    //             // }
-    //         });
-
-    //         match client.get("Hello").await {
-    //             Ok(Some(data)) => println!("[SUCCESS] GET output: {:?}", data),
-    //             Ok(None) => println!("[SUCCESS] GET output empty"),
-    //             Err(e) => println!("[FAIL] GET error: {:?}", e),
-    //         };
-
-    //         // match client.set("Hello", "brother!".into()).await {
-    //         //     Ok(()) => println!("[SUCCESS] SET"),
-    //         //     Err(e) => println!("[FAIL] SET error: {:?}", e),
-    //         // };
-
-    //         // match client.get("Hello").await {
-    //         //     Ok(Some(data)) => println!("[SUCCESS] GET output: {:?}", data),
-    //         //     Ok(None) => println!("[SUCCESS] GET output empty"),
-    //         //     Err(e) => println!("[FAIL] GET error: {:?}", e),
-    //         // };
-            
-    //         // let mut client2 = client::connect("localhost:6379").await.unwrap();
-    //         // match client2.set("Hello", "people".into()).await {
-    //         //     Ok(()) => println!("[SUCCESS] SET"),
-    //         //     Err(e) => println!("[FAIL] SET error: {:?}", e),
-    //         // };
-
-    //         // let mut client3 = client::connect("localhost:6379").await.unwrap();
-    //         // match client3.get("Hello").await {
-    //         //     Ok(Some(data)) => println!("[SUCCESS] GET output: {:?}", data),
-    //         //     Ok(None) => println!("[SUCCESS] GET output empty"),
-    //         //     Err(e) => println!("[FAIL] GET error: {:?}", e),
-    //         // };
-    //     }
-    //     Err(_) => panic!("[FAIL] Failed to establish connection"),
-    // };
+    match rx1.await.unwrap() {
+        Ok(Some(data)) => println!("[SUCCESS] GET output: {:?}", data),
+        Ok(None) => println!("[SUCCESS] GET output empty"),
+        Err(e) => println!("[FAIL] GET error: {:?}", e),
+    }
 
 }
 
@@ -109,17 +80,36 @@ async fn start_clerk(redis_addr: String, mut rx: Receiver<Op>) {
                 // reading from a closed channel returns `None`. when all sender objects go out of scope, the channel is closed.
                 while let Some(op) = rx.recv().await {
                     match op {
-                        Set{key, value} => {
+                        Set{key, value, reply_channel} => {
+                            // let resp = clerk.set(&key, value).await;
+                            // println!("{:?}", resp.unwrap());
+
                             match clerk.set(&key, value).await {
-                                Ok(()) => println!("[SUCCESS] SET"),
-                                Err(e) => println!("[FAIL] SET error: {:?}", e),
+                                Err(e) if e.to_string().contains("SUCCESS") => {
+                                    match reply_channel.send(Ok(())) {
+                                        Ok(_) => println!("[SUCCESS] clerk: SET response from server sent to client"),
+                                        Err(e) => println!("[FAIL] clerk: SET failed to respond to client: {:?}", e),
+                                    }
+                                },
+                                Err(e) => {
+                                    match reply_channel.send(Err(e)) {
+                                        Ok(_) => println!("[SUCCESS] clerk: SET response from server sent to client"),
+                                        Err(e) => println!("[FAIL] clerk: SET failed to respond to client: {:?}", e),
+                                    }
+                                },
+                                _ => {
+                                    match reply_channel.send(Ok(())) {
+                                        Ok(_) => println!("[SUCCESS] clerk: SET response from server sent to client"),
+                                        Err(e) => println!("[FAIL] clerk: SET failed to respond to client: {:?}", e),
+                                    }
+                                }
                             }
+                            
                         },
-                        Get{key} => {
-                            match clerk.get(&key).await {
-                                Ok(Some(data)) => println!("[SUCCESS] GET output: {:?}", data),
-                                Ok(None) => println!("[SUCCESS] GET output empty"),
-                                Err(e) => println!("[FAIL] GET error: {:?}", e),
+                        Get{key, reply_channel} => {
+                            match reply_channel.send(clerk.get(&key).await) {
+                                Ok(_) => println!("[SUCCESS] clerk: GET response from server sent to client"),
+                                Err(e) => println!("[FAIL] clerk: GET failed to respond to client: {:?}", e),
                             }
                         },
                     }
