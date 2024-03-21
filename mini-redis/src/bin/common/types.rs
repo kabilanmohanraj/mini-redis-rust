@@ -13,6 +13,6 @@ pub enum Op {
     },
     Get {
         key: String,
-        reply_channel: OpResponse<Bytes>
+        reply_channel: OpResponse<Option<Bytes>> // Option<Bytes> - to handle empty GET responses
     },
 }
