@@ -15,4 +15,36 @@ pub enum Op {
         key: String,
         reply_channel: OpResponse<Option<Bytes>> // Option<Bytes> - to handle empty GET responses
     },
+    Publish {
+        user: User,
+        topic: Topic,
+        message: Message,
+        reply_channel: OpResponse<()>
+    },
+    Subscribe {
+        user: User,
+        topic: Topic,
+        reply_channel: OpResponse<()>
+    },
+    Unsubscribe {
+        user: User,
+        topic: Topic,
+        reply_channel: OpResponse<()>
+    },
+    Ping {
+        reply_channel: OpResponse<()>
+    }
+}
+
+// pub-sub data structures
+pub struct Message {
+    data: Bytes
+}
+
+pub struct User {
+    id: String,
+}
+
+pub struct Topic {
+    name: String
 }
