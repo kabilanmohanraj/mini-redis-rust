@@ -8,6 +8,12 @@ This project is the learning journey into the Rust programming language, focusin
 
 The Mini Redis Client and Server project is an application designed to mimic the basic functionalities of Redis, a popular in-memory data store, using Rust and the Tokio framework for asynchronous IO operations. This implementation focuses on key features of Redis, such as set and get commands. The `publisher-subscriber` feature is in the works. 
 
+Architecture of the mini Redis application:
+![Alt text](./img/mini-redis.png)
+
+A closer look at the sharded database/ key-value store:
+![Alt text](./img/sharded-db.png)
+
 ## Features
 
 - **Async/Await Syntax**: Utilizes Rust's async/await syntax for non-blocking network IO operations.
@@ -65,6 +71,8 @@ cargo run --bin client
 
 ## Future Work
 
-- **Command Expansion**: Adding support for more Redis commands to enhance the functionality of the mini Redis server.
-- **Performance Optimization**: Investigating opportunities for performance improvements and optimizations in the client-server communication.
+- **Command Expansion**: Adding support for more Redis commands to enhance the functionality of the mini Redis server, starting with `PUBLISH` and `SUBSCRIBE`.
+- **Load Balancer**: Implementing a client-side load balancer to enable a pool of clients to interact with a pool of clerks.
 - **Authentication and Security**: Implementing basic security features, such as client authentication and encrypted communication.
+- **Database Replication and Persistence**: Implementing a Redis cluster deployment, supporting asynchronous data replication and tunable persistence options.
+- **Performance Optimization**: Investigating opportunities for performance improvements and optimizations in the client-server communication.
